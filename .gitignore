@@ -1,0 +1,9 @@
+# NPM
+node_modules
+
+# Build
+dist
+
+# Misc
+.idea
+.DS_Store
