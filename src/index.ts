@@ -1,19 +1,20 @@
 import { Octokit } from '@octokit/rest';
+import { extractRepositoryFullName } from './utilities';
 
 /**
- * Calculates the experience gained for a single repository.
+ * Returns the XP multiplier based on the number of repository stargazers.
  *
  * @param stargazers_count The number of stargazers the repository has.
  */
-const getRepoExperience = (stargazers_count = 0) => {
+const getStargazersMultiplier = (stargazers_count = 0) => {
   if (stargazers_count < 20) {
-    return stargazers_count;
+    return 1;
   } else if (stargazers_count < 50) {
-    return stargazers_count * 1.05;
+    return 2;
   } else if (stargazers_count < 200) {
-    return stargazers_count * 1.1;
+    return 4;
   } else {
-    return stargazers_count * 1.15;
+    return 8;
   }
 };
 
@@ -29,12 +30,12 @@ const getReposExperience = async (octokit: Octokit, username: string) => {
     octokit.repos.listForUser({
       username: username,
       type: 'member',
-      per_page: 50,
+      per_page: 100,
     }),
     octokit.repos.listForUser({
       username: username,
       type: 'owner',
-      per_page: 50,
+      per_page: 100,
     }),
   ]);
 
@@ -44,7 +45,7 @@ const getReposExperience = async (octokit: Octokit, username: string) => {
   if (!!memberRepositories?.data?.length) {
     experience += memberRepositories.data.reduce(
       (acc, { stargazers_count = 0 }) => {
-        return acc + getRepoExperience(stargazers_count);
+        return acc + 1 * getStargazersMultiplier(stargazers_count);
       },
       0
     );
@@ -57,7 +58,7 @@ const getReposExperience = async (octokit: Octokit, username: string) => {
   if (!!ownerRepositories?.data?.length) {
     experience += ownerRepositories.data.reduce(
       (acc, { stargazers_count = 0 }) => {
-        return acc + getRepoExperience(stargazers_count);
+        return acc + 1 * getStargazersMultiplier(stargazers_count);
       },
       0
     );
@@ -67,36 +68,75 @@ const getReposExperience = async (octokit: Octokit, username: string) => {
 };
 
 /**
- * Calculates the experience gained for pull requests the user authored.
+ * Calculates the experience gained for issues and pull requests the user authored.
  *
  * @param octokit Octokit instance
  * @param username Username for which to get the experience
  */
-const getPullRequestsExperience = async (
+const getCombinedExperience = async (
   octokit: Octokit,
   username: string
 ) => {
-  const searchResult = await octokit.search.issuesAndPullRequests({
-    q: `author:${username} is:pr`,
-    per_page: 50,
+  // Create requests for multiple pages
+  const itemRequests = Array.from({ length: 10 }, (_, i) => i + 1).map(
+    (page) => {
+      return octokit.search.issuesAndPullRequests({
+        q: `author:${username} is:issue is:pull-request`,
+        per_page: 100,
+        page,
+      });
+    }
+  );
+
+  // Await all item requests
+  const items = await Promise.all(itemRequests).then((results) => {
+    return results.flatMap((result) => result?.data?.items || []);
   });
 
-  return searchResult.data.items.length;
-};
+  // Extract and deduplicate repository names
+  const repositoryFullNames = items.reduce<string[]>((prev, current) => {
+    const repositoryFullName = extractRepositoryFullName(
+      current.repository_url
+    );
 
-/**
- * Calculates the experience gained for issues the user authored.
- *
- * @param octokit Octokit instance
- * @param username Username for which to get the experience
- */
-const getIssuesExperience = async (octokit: Octokit, username: string) => {
-  const searchResult = await octokit.search.issuesAndPullRequests({
-    q: `author:${username} is:issue`,
-    per_page: 50,
+    return prev.includes(repositoryFullName)
+      ? prev
+      : [...prev, repositoryFullName];
+  }, []);
+
+  // Fetch data for extracted repositories
+  const repositories = await Promise.all(
+    repositoryFullNames.map((repositoryFullName) => {
+      const [owner, repo] = repositoryFullName.split('/');
+
+      return octokit.repos.get({
+        owner,
+        repo,
+      });
+    })
+  );
+
+  // Create name - index map for easier access
+  const repositoryNameIndexMap: Record<string, number> = {};
+  repositoryFullNames.forEach((repositoryFullName, index) => {
+    repositoryNameIndexMap[repositoryFullName] = index;
   });
 
-  return searchResult.data.items.length;
+  let experience = 0;
+
+  for (const item of items) {
+    const repositoryFullName = extractRepositoryFullName(
+      item.repository_url
+    );
+
+    const repository =
+      repositories[repositoryNameIndexMap[repositoryFullName]];
+
+    experience +=
+      1 * getStargazersMultiplier(repository.data.stargazers_count);
+  }
+
+  return experience;
 };
 
 /**
@@ -114,14 +154,10 @@ export const getExperience = async (
     auth: accessToken,
   });
 
-  const [reposExperience, pullRequestsExperience, issuesExperience] =
-    await Promise.all([
-      getReposExperience(octokit, username),
-      getPullRequestsExperience(octokit, username),
-      getIssuesExperience(octokit, username),
-    ]);
+  const [reposExperience, combinedExperience] = await Promise.all([
+    getReposExperience(octokit, username),
+    getCombinedExperience(octokit, username),
+  ]);
 
-  return Math.floor(
-    reposExperience + pullRequestsExperience + issuesExperience
-  );
+  return Math.floor(reposExperience + combinedExperience);
 };
