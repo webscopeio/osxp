@@ -7,14 +7,20 @@ import { extractRepositoryFullName } from './utilities';
  * @param stargazers_count The number of stargazers the repository has.
  */
 const getStargazersMultiplier = (stargazers_count = 0) => {
-  if (stargazers_count < 20) {
+  if (stargazers_count < 10) {
     return 1;
-  } else if (stargazers_count < 50) {
+  } else if (stargazers_count < 20) {
     return 2;
+  } else if (stargazers_count < 50) {
+    return 3;
   } else if (stargazers_count < 200) {
     return 4;
-  } else {
+  } else if (stargazers_count < 1000) {
+    return 6;
+  } else if (stargazers_count < 10000) {
     return 8;
+  } else {
+    return 10;
   }
 };
 
